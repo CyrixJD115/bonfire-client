@@ -1,0 +1,46 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-deep-50: #c5c9d9;
+  --color-deep-100: #a0a5b8;
+  --color-deep-200: #7a8098;
+  --color-deep-300: #5a6078;
+  --color-deep-600: #252b40;
+  --color-deep-700: #1a1f30;
+  --color-deep-800: #0f1320;
+  --color-deep-900: #0a0d18;
+  --color-deep-950: #080a18;
+  --color-ember-400: #fb923c;
+  --color-ember-500: #f97316;
+  --color-ember-600: #ea580c;
+  --color-flame-400: #f87171;
+  --color-flame-500: #ef4444;
+  --color-flame-600: #dc2626;
+  --color-flame-700: #b91c1c;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --shadow-glow-amber: 0 0 15px rgba(251, 146, 60, 0.3);
+  --shadow-block: 3px 3px 0px 0px rgba(0, 0, 0, 0.4);
+  --animate-pulse-glow: pulse-glow 3s ease-in-out infinite;
+  --animate-ember-rise: ember-rise 4s ease-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes ember-rise {
+  0% { transform: translateY(0) scale(1); opacity: 0.8; }
+  100% { transform: translateY(-120px) scale(0); opacity: 0; }
+}
+
+@layer base {
+  * { scrollbar-width: thin; scrollbar-color: #252b40 #080a10; }
+  body {
+    background-color: #080a18;
+    color: #c5c9d9;
+    font-family: 'Inter', system-ui, sans-serif;
+    margin: 0;
+  }
+}

@@ -230,6 +230,19 @@ async def _cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_dashboard(args: argparse.Namespace) -> int:
+    import webbrowser
+
+    _setup_logging(args.debug)
+    if _daemon_proxy("GET", "/api/health") is None:
+        print("Daemon is not running. Start it with: bonfire-client daemon start")
+        return 1
+    url = f"http://{DAEMON_HOST}:{DAEMON_PORT}"
+    print(f"Opening {url}")
+    webbrowser.open(url)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bonfire-client",
@@ -265,7 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon_cmd = sub.add_parser("daemon", help="Manage the background daemon")
     daemon_cmd.add_argument("action", choices=["start", "stop", "status"], help="Daemon action")
+    daemon_cmd.add_argument("--open", action="store_true", help="Open dashboard in browser after start")
     daemon_cmd.set_defaults(func=_cmd_daemon)
+
+    dash = sub.add_parser("dashboard", help="Open the Bonfire dashboard in your browser")
+    dash.set_defaults(func=_cmd_dashboard)
 
     return parser
 
@@ -273,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
 async def _cmd_daemon(args: argparse.Namespace) -> int:
     import os
     import subprocess
+    import webbrowser
 
     _setup_logging(args.debug)
     match args.action:
@@ -287,6 +305,10 @@ async def _cmd_daemon(args: argparse.Namespace) -> int:
                 stdin=subprocess.DEVNULL,
             )
             print(f"Daemon started (PID {proc.pid})")
+            print(f"Dashboard: http://{DAEMON_HOST}:{DAEMON_PORT}")
+            print("System tray icon will appear with Open Dashboard / Quit")
+            if args.open:
+                webbrowser.open(f"http://{DAEMON_HOST}:{DAEMON_PORT}")
         case "stop":
             data = _daemon_proxy("POST", "/shutdown")
             if data is not None:
@@ -297,6 +319,8 @@ async def _cmd_daemon(args: argparse.Namespace) -> int:
             data = _daemon_proxy("GET", "/api/health")
             if data is not None:
                 print(f"Daemon is running on {DAEMON_HOST}:{DAEMON_PORT}")
+                print(f"  Version: {data.get('version', '?')}")
+                print(f"  Uptime: {data.get('uptime', '?')}")
             else:
                 print("Daemon is not running")
     return 0
