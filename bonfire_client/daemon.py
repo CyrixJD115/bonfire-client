@@ -21,7 +21,7 @@ logger = logging.getLogger("bonfired")
 DAEMON_HOST = "127.0.0.1"
 DAEMON_PORT = 21466
 
-_DASHBOARD_DIR = (Path(__file__).resolve().parent.parent.parent / "dashboard" / "dist").resolve()
+_DASHBOARD_DIR = (Path(__file__).resolve().parent.parent / "dashboard" / "dist").resolve()
 
 
 class BonfireDaemonHandler(BaseHTTPRequestHandler):
