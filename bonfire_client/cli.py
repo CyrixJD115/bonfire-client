@@ -36,6 +36,12 @@ def _daemon_proxy(method: str, path: str) -> dict | None:
         return None
 
 
+def _daemon_cmd() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--daemon"]
+    return [sys.executable, "-m", "bonfire_client", "--daemon"]
+
+
 def _ensure_daemon() -> BonfireDaemon | None:
     if _daemon_proxy("GET", "/api/health") is not None:
         return None
@@ -288,7 +294,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def _cmd_daemon(args: argparse.Namespace) -> int:
-    import os
     import subprocess
     import webbrowser
 
@@ -299,7 +304,7 @@ async def _cmd_daemon(args: argparse.Namespace) -> int:
                 print("Daemon is already running")
                 return 0
             proc = subprocess.Popen(
-                [sys.executable, "-m", "bonfire_client", "--daemon"],
+                _daemon_cmd(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,

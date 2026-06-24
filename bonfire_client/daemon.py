@@ -21,7 +21,27 @@ logger = logging.getLogger("bonfired")
 DAEMON_HOST = "127.0.0.1"
 DAEMON_PORT = 21466
 
-_DASHBOARD_DIR = (Path(__file__).resolve().parent.parent / "dashboard" / "dist").resolve()
+_DASHBOARD_DIR: Path | None = None
+
+
+def _get_dashboard_dir() -> Path:
+    global _DASHBOARD_DIR
+    if _DASHBOARD_DIR is not None:
+        return _DASHBOARD_DIR
+
+    # Compiled mode (Nuitka onefile): data files at bonfire_client/browser/
+    p = Path(__file__).resolve().parent / "browser"
+    if p.is_dir():
+        _DASHBOARD_DIR = p
+        return p
+
+    # Development mode: bonfire_client/../dashboard/dist/
+    p = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
+    if p.is_dir():
+        _DASHBOARD_DIR = p
+        return p
+
+    raise RuntimeError("Dashboard dist directory not found")
 
 
 class BonfireDaemonHandler(BaseHTTPRequestHandler):
@@ -43,10 +63,11 @@ class BonfireDaemonHandler(BaseHTTPRequestHandler):
         self._send_json({"error": message}, status)
 
     def _serve_static(self, path: str) -> None:
+        dashboard_dir = _get_dashboard_dir()
         if path == "/":
-            file_path = _DASHBOARD_DIR / "index.html"
+            file_path = dashboard_dir / "index.html"
         elif path.startswith("/assets/"):
-            file_path = _DASHBOARD_DIR / path.lstrip("/")
+            file_path = dashboard_dir / path.lstrip("/")
         else:
             self._send_error_json(HTTPStatus.NOT_FOUND, "not found")
             return
