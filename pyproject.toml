@@ -1,0 +1,22 @@
+[project]
+name = "bonfire-client"
+version = "0.1.0"
+description = "Bonfire CLI client for game save backup and upload"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27.0",
+    "psutil>=5.9.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+zstd = ["zstandard>=0.22.0"]
+brotli = ["brotli>=1.1.0"]
+all = ["bonfire-client[zstd,brotli]"]
+
+[project.scripts]
+bonfire-client = "bonfire_client.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
