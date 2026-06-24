@@ -8,7 +8,7 @@ from pathlib import Path
 
 from bonfire_client import __version__
 from bonfire_client.config import load_config
-from bonfire_client.uploader import upload_save
+from bonfire_client.daemon import DAEMON_HOST, DAEMON_PORT, BonfireDaemon
 
 logger = logging.getLogger("bonfire-client")
 
@@ -22,10 +22,39 @@ def _setup_logging(debug: bool) -> None:
     )
 
 
+def _daemon_proxy(method: str, path: str) -> dict | None:
+    import json
+    import urllib.request
+    import urllib.error
+
+    url = f"http://{DAEMON_HOST}:{DAEMON_PORT}{path}"
+    try:
+        req = urllib.request.Request(url, method=method)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, ConnectionRefusedError, OSError):
+        return None
+
+
+def _ensure_daemon() -> BonfireDaemon | None:
+    if _daemon_proxy("GET", "/api/health") is not None:
+        return None
+    logger.info("Daemon not running — starting background daemon")
+    d = BonfireDaemon()
+    d.start()
+    return d
+
+
 async def _cmd_watch(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     _setup_logging(args.debug)
 
+    data = _daemon_proxy("POST", "/api/watch/start")
+    if data is not None:
+        print("Watch started on daemon")
+        return 0
+
+    logger.warning("Daemon unavailable, falling back to local watch")
     from bonfire_client.watcher import DirectoryWatcher, ProcessMonitor
 
     if args.processes:
@@ -57,6 +86,7 @@ async def _cmd_watch(args: argparse.Namespace) -> int:
                                     result.save_dir, archive_path, method=config.compression,
                                     compression_level=config.compression_level,
                                 )
+                                from bonfire_client.uploader import upload_save
                                 ur = await upload_save(
                                     config.server_url, config.server_port, config.api_key,
                                     archive_path, game_name=result.game_name,
@@ -76,6 +106,33 @@ async def _cmd_scan(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     _setup_logging(args.debug)
 
+    data = _daemon_proxy("GET", "/api/scan")
+    if data is not None:
+        print(f"Scan result from daemon (machine: {config.machine_id})")
+        print()
+        steam = data.get("steam", [])
+        heroic = data.get("heroic", [])
+        if steam:
+            print(f"Found {len(steam)} Steam games:")
+            for g in steam:
+                print(f"  {g['game_name']} (steam:{g['steam_app_id']}) — {g['save_dir']}")
+        else:
+            print("No Steam games found")
+        if heroic:
+            print(f"\nFound {len(heroic)} Heroic games:")
+            for g in heroic:
+                print(f"  {g['title']} ({g['app_name']})")
+                if g["save_dir"]:
+                    print(f"    Save dir: {g['save_dir']}")
+                    print(f"    Files: {len(g['files'])}")
+                else:
+                    print(f"    Wine prefix: {g['wine_prefix']}")
+                    print(f"    No save directory found")
+        else:
+            print("No Heroic games found")
+        return 0
+
+    logger.warning("Daemon unavailable, falling back to local scan")
     from bonfire_client.scanner import (
         fetch_ludusavi_manifest,
         find_steam_roots,
@@ -149,6 +206,7 @@ async def _cmd_upload(args: argparse.Namespace) -> int:
         hash_value = hashlib.sha256(archive.read_bytes()).hexdigest()
 
     try:
+        from bonfire_client.uploader import upload_save
         ur = await upload_save(
             config.server_url, config.server_port, config.api_key,
             archive, steam_app_id=args.steam_app_id or "",
@@ -205,7 +263,43 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument("--generation", type=int, default=0, help="Generation number (0 = auto)")
     upload.set_defaults(func=_cmd_upload)
 
+    daemon_cmd = sub.add_parser("daemon", help="Manage the background daemon")
+    daemon_cmd.add_argument("action", choices=["start", "stop", "status"], help="Daemon action")
+    daemon_cmd.set_defaults(func=_cmd_daemon)
+
     return parser
+
+
+async def _cmd_daemon(args: argparse.Namespace) -> int:
+    import os
+    import subprocess
+
+    _setup_logging(args.debug)
+    match args.action:
+        case "start":
+            if _daemon_proxy("GET", "/api/health") is not None:
+                print("Daemon is already running")
+                return 0
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "bonfire_client", "--daemon"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            print(f"Daemon started (PID {proc.pid})")
+        case "stop":
+            data = _daemon_proxy("POST", "/shutdown")
+            if data is not None:
+                print("Daemon stopped")
+            else:
+                print("Daemon is not running")
+        case "status":
+            data = _daemon_proxy("GET", "/api/health")
+            if data is not None:
+                print(f"Daemon is running on {DAEMON_HOST}:{DAEMON_PORT}")
+            else:
+                print("Daemon is not running")
+    return 0
 
 
 async def async_main(argv: list[str] | None = None) -> int:

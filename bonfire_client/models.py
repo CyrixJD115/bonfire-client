@@ -38,3 +38,22 @@ class UploadResult:
     generation: int
     hash: str
     size_bytes: int
+
+
+@dataclass
+class HeroicGame:
+    app_name: str
+    title: str
+    wine_prefix: Path | None
+    platform: str
+    cloud_save_folder: str | None
+    cloud_saves_supported: bool
+    install_path: Path | None
+    save_dir: Path | None
+    files: list[Path] = field(default_factory=list)
+
+
+@dataclass
+class ScanResult:
+    steam_games: list[GameSave] = field(default_factory=list)
+    heroic_games: list[HeroicGame] = field(default_factory=list)

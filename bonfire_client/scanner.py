@@ -4,7 +4,8 @@ import platform
 import re
 from pathlib import Path
 
-from bonfire_client.models import GameSave
+from bonfire_client.models import GameSave, HeroicGame, ScanResult
+from bonfire_client.heroic_scanner import HeroicScanner, detect_heroic_config_dir
 
 LUDUSAVI_MANIFEST_URL = "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.json"
 
@@ -126,3 +127,26 @@ def _resolve_path(pattern: str, system: str) -> Path | None:
 
     path = Path(pattern)
     return path if path.exists() else None
+
+
+async def run_scan() -> ScanResult:
+    manifest: dict = {"games": {}}
+    try:
+        manifest = await fetch_ludusavi_manifest()
+    except Exception:
+        pass
+
+    steam_saves: list[GameSave] = []
+    roots = find_steam_roots()
+    for root in roots:
+        for lib in get_library_folders(root):
+            games = get_installed_games(lib)
+            steam_saves.extend(discover_save_dirs(manifest, games))
+
+    heroic_games: list[HeroicGame] = []
+    heroic_cfg = detect_heroic_config_dir()
+    if heroic_cfg:
+        scanner = HeroicScanner(heroic_cfg)
+        heroic_games = scanner.scan()
+
+    return ScanResult(steam_games=steam_saves, heroic_games=heroic_games)

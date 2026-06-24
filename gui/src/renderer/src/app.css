@@ -1,0 +1,14 @@
+@import 'tailwindcss';
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #252b40 #080a10;
+  }
+
+  body {
+    background-color: #080a18;
+    color: #c5c9d9;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
