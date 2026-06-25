@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Literal
+
+
+class SyncStatus(str, Enum):
+    LOCAL_ONLY = "local_only"
+    SYNCED = "synced"
+    OUTDATED = "outdated"
+    UNWATCHED = "unwatched"
 
 
 @dataclass
@@ -21,6 +30,15 @@ class ClientConfig:
 
 
 @dataclass
+class DaemonConfig:
+    server_url: str = "http://127.0.0.1"
+    server_port: int = 21465
+    api_key: str = ""
+    machine_id: str = ""
+    server_web_url: str = "http://127.0.0.1:21465"
+
+
+@dataclass
 class GameSave:
     game_name: str
     steam_app_id: str
@@ -28,6 +46,9 @@ class GameSave:
     save_dir: Path
     files: list[Path] = field(default_factory=list)
     hash: str = ""
+    sync_status: SyncStatus = SyncStatus.UNWATCHED
+    server_hash: str = ""
+    server_last_modified: str = ""
 
 
 @dataclass
@@ -51,9 +72,27 @@ class HeroicGame:
     install_path: Path | None
     save_dir: Path | None
     files: list[Path] = field(default_factory=list)
+    sync_status: SyncStatus = SyncStatus.UNWATCHED
+    server_hash: str = ""
+    server_last_modified: str = ""
 
 
 @dataclass
 class ScanResult:
     steam_games: list[GameSave] = field(default_factory=list)
     heroic_games: list[HeroicGame] = field(default_factory=list)
+
+
+@dataclass
+class GameInfo:
+    id: str
+    title: str
+    platform: str
+    storefront: str
+    save_dir: str | None
+    file_count: int
+    sync_status: SyncStatus
+    server_hash: str
+    server_last_modified: str
+    install_path: str | None
+    has_save_files: bool

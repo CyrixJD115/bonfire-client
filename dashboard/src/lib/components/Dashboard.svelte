@@ -68,11 +68,7 @@
     <button
       onclick={handleScan}
       disabled={scanning}
-      class="px-5 py-2.5 font-semibold text-sm uppercase tracking-wider text-white
-        bg-ember-600 hover:bg-ember-500 disabled:opacity-50 disabled:cursor-not-allowed
-        border border-ember-400/30 shadow-block shadow-black/40
-        active:translate-x-[2px] active:translate-y-[2px] active:shadow-[1px_1px_0px_0px_rgba(0,0,0,0.6)]
-        transition-all"
+      class="btn btn-primary"
     >
       {scanning ? 'Scanning...' : 'Run Scan'}
     </button>

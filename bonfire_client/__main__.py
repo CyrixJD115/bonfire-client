@@ -10,6 +10,8 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "--daemon":
         sys.argv.pop(1)
         run_daemon()
+    elif len(sys.argv) < 2:
+        run_daemon()
     else:
         raise SystemExit(cli_main())
 

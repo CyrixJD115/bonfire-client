@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import platform as _platform
 from pathlib import Path
 
 from bonfire_client.models import HeroicGame
@@ -57,8 +58,6 @@ class HeroicScanner:
 
     def _parse_game(self, cfg_file: Path) -> HeroicGame | None:
         data = _load_json(cfg_file)
-        # GamesConfig JSON: top-level key is the game UUID
-        # {"<uuid>": {"winePrefix": "...", "wineVersion": {...}, ...}, "version": "v0"}
         uuids = [k for k in data if k not in ("version", "explicit")]
         if not uuids:
             return None
@@ -69,8 +68,8 @@ class HeroicScanner:
         platform = game_cfg.get("platform", "Win32")
 
         app_name = cfg_file.stem
+        system = _platform.system().lower()
 
-        # Look up title + cloud_save_folder from install info caches
         title = ""
         cloud_save_folder: str | None = None
         cloud_saves_supported = False
@@ -86,7 +85,6 @@ class HeroicScanner:
                 cloud_saves_supported = inner.get("cloud_saves_supported", False)
                 break
 
-        # Fallback: try library cache for title
         if not title:
             for backend_name in ("legendary", "gog", "nile"):
                 lib = _load_json(self._config_dir / f"store_cache/{backend_name}_library.json")
@@ -98,7 +96,9 @@ class HeroicScanner:
                 if title:
                     break
 
-        # Resolve save directory
+        if not title:
+            title = app_name
+
         save_dir: Path | None = None
         files: list[Path] = []
 
@@ -107,7 +107,6 @@ class HeroicScanner:
             if save_dir and save_dir.exists():
                 files = sorted(save_dir.rglob("*"))
 
-        # Fallback: check installed.json for save_path
         if not save_dir and wine_prefix:
             installed_data = _load_json(
                 self._config_dir / "legendaryConfig" / "legendary" / "installed.json"
@@ -121,12 +120,9 @@ class HeroicScanner:
                         save_dir = candidate
                         files = sorted(save_dir.rglob("*"))
 
-        install_path = None
+        install_path: Path | None = None
         if wine_prefix:
-            for ch in wine_prefix.parent.iterdir():
-                if ch.name == app_name or ch.name == title or ch.name == cfg_file.stem:
-                    install_path = ch
-                    break
+            install_path = self._resolve_install_path(app_name, title, wine_prefix)
 
         return HeroicGame(
             app_name=app_name,
@@ -139,3 +135,19 @@ class HeroicScanner:
             save_dir=save_dir,
             files=files,
         )
+
+    def _resolve_install_path(self, app_name: str, title: str, wine_prefix: Path) -> Path | None:
+        installed_data = _load_json(
+            self._config_dir / "legendaryConfig" / "legendary" / "installed.json"
+        )
+        entry = installed_data.get(app_name)
+        if entry and entry.get("install_path"):
+            candidate = Path(entry["install_path"])
+            if candidate.exists():
+                return candidate
+
+        for ch in wine_prefix.parent.iterdir():
+            if ch.name in (app_name, title, f"drive_c"):
+                return ch
+
+        return None

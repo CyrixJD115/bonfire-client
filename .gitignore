@@ -5,3 +5,7 @@ build/
 *.spec
 *.egg-info/
 .venv/
+*.build/
+.onefile-build/
+.pytest_cache/
+node_modules/

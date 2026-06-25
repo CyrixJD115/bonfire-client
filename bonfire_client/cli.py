@@ -22,7 +22,7 @@ def _setup_logging(debug: bool) -> None:
     )
 
 
-def _daemon_proxy(method: str, path: str) -> dict | None:
+def _daemon_proxy(method: str, path: str, timeout: float = 5) -> dict | None:
     import json
     import urllib.request
     import urllib.error
@@ -30,7 +30,7 @@ def _daemon_proxy(method: str, path: str) -> dict | None:
     url = f"http://{DAEMON_HOST}:{DAEMON_PORT}{path}"
     try:
         req = urllib.request.Request(url, method=method)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, ConnectionRefusedError, OSError):
         return None
@@ -112,7 +112,7 @@ async def _cmd_scan(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     _setup_logging(args.debug)
 
-    data = _daemon_proxy("GET", "/api/scan")
+    data = _daemon_proxy("GET", "/api/scan", timeout=60)
     if data is not None:
         print(f"Scan result from daemon (machine: {config.machine_id})")
         print()
@@ -145,33 +145,43 @@ async def _cmd_scan(args: argparse.Namespace) -> int:
         get_installed_games,
         get_library_folders,
         discover_save_dirs,
+        _build_steam_index,
+        _is_steam_tool,
     )
 
     print(f"Scanning game saves (machine: {config.machine_id})...")
     print()
 
+    steam_index: dict[str, dict] = {}
     try:
         manifest = await fetch_ludusavi_manifest()
-        print(f"Loaded Ludusavi manifest ({len(manifest.get('games', {}))} games)")
+        steam_index = _build_steam_index(manifest)
+        print(f"Loaded Ludusavi manifest ({len(manifest)} entries, {len(steam_index)} Steam IDs)")
     except Exception as e:
         print(f"Warning: could not fetch Ludusavi manifest: {e}")
-        manifest = {"games": {}}
 
     roots = find_steam_roots()
     all_games: list[dict] = []
+    seen_ids: set[str] = set()
     for root in roots:
         print(f"Steam root: {root}")
         for lib in get_library_folders(root):
             games = get_installed_games(lib)
-            all_games.extend(games)
+            for g in games:
+                if g["steam_app_id"] in seen_ids:
+                    continue
+                if _is_steam_tool(g["name"], g["steam_app_id"]):
+                    continue
+                seen_ids.add(g["steam_app_id"])
+                all_games.append(g)
 
     if all_games:
         print(f"Found {len(all_games)} installed Steam games")
-        saves = discover_save_dirs(manifest, all_games)
+        saves = discover_save_dirs(steam_index, all_games)
         for s in saves:
-            print(f"  {s.game_name} (steam:{s.steam_app_id}) — {s.save_dir}")
-        if not saves:
-            print("  No save directories found (check Ludusavi manifest coverage)")
+            tag = f"{len(s.files)} files" if s.files else "no saves"
+            sd = str(s.save_dir) if s.save_dir and str(s.save_dir) != "." else ""
+            print(f"  {s.game_name} (steam:{s.steam_app_id}) — {tag}{('  '+sd) if sd else ''}")
     else:
         print("No Steam games found")
 
@@ -311,7 +321,7 @@ async def _cmd_daemon(args: argparse.Namespace) -> int:
             )
             print(f"Daemon started (PID {proc.pid})")
             print(f"Dashboard: http://{DAEMON_HOST}:{DAEMON_PORT}")
-            print("System tray icon will appear with Open Dashboard / Quit")
+            print("Tray icon (D-Bus SNI) will appear — Open Dashboard / Quit")
             if args.open:
                 webbrowser.open(f"http://{DAEMON_HOST}:{DAEMON_PORT}")
         case "stop":

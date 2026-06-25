@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build bonfire-client as a standalone binary with Nuitka.
 
-Usage:
-    python build.py          # Full build with zstd + brotli + tray
-    python build.py --min    # Minimal build (httpx + yaml only, no zstd/brotli)
-"""
+    Usage:
+        python build.py          # Full build with zstd + brotli
+        python build.py --min    # Minimal build (httpx + yaml only, no zstd/brotli)
+    """
 
 import argparse
 import shutil
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def build(minimal: bool = False) -> Path:
@@ -37,11 +37,27 @@ def build(minimal: bool = False) -> Path:
         cmd += [
             "--include-module=brotli",
             "--include-module=zstandard",
+            "--include-module=jeepney",
+            "--include-module=pystray",
+            "--include-package=PIL",
         ]
+
+    cmd += [
+        "--include-data-dir={}=bonfire_client/assets".format(ROOT / "bonfire_client" / "assets"),
+    ]
 
     cmd.append("bonfire_client")
 
     subprocess.check_call(cmd)
+
+    # Clean up intermediate Nuitka build artifacts
+    for d in ROOT.iterdir():
+        if d.is_dir() and d.name.endswith(".build"):
+            shutil.rmtree(d)
+    onefile = ROOT / ".onefile-build"
+    if onefile.is_dir():
+        shutil.rmtree(onefile)
+
     return dist_dir / "bonfire-client"
 
 

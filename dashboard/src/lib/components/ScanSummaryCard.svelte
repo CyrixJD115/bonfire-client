@@ -4,11 +4,8 @@
   $: scan = $scanResult;
 </script>
 
-<div class="bg-deep-800/80 border border-deep-600/50 p-5 shadow-block shadow-black/40 backdrop-blur-sm rounded-none">
-  <h3 class="text-base font-bold text-white uppercase tracking-wider border-b border-deep-600/30 pb-2 mb-4"
-    style="text-shadow: 0 0 20px rgba(251,146,60,0.15);">
-    Last Scan
-  </h3>
+<div class="card">
+  <h3 class="card-header">Last Scan</h3>
   {#if scan}
     <div class="space-y-2 text-sm">
       <div class="flex justify-between">

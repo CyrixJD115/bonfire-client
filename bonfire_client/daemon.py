@@ -1,20 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
+import platform as _platform
 import threading
 import time
-import webbrowser
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from bonfire_client import __version__
 from bonfire_client.config import load_config
+from bonfire_client.models import (
+    DaemonConfig,
+    GameInfo,
+    GameSave,
+    HeroicGame,
+    ScanResult,
+    SyncStatus,
+)
 from bonfire_client.scanner import run_scan
+from bonfire_client.tray import TrayManager
 
 logger = logging.getLogger("bonfired")
 
@@ -29,19 +42,97 @@ def _get_dashboard_dir() -> Path:
     if _DASHBOARD_DIR is not None:
         return _DASHBOARD_DIR
 
-    # Compiled mode (Nuitka onefile): data files at bonfire_client/browser/
     p = Path(__file__).resolve().parent / "browser"
     if p.is_dir():
         _DASHBOARD_DIR = p
         return p
 
-    # Development mode: bonfire_client/../dashboard/dist/
     p = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
     if p.is_dir():
         _DASHBOARD_DIR = p
         return p
 
     raise RuntimeError("Dashboard dist directory not found")
+
+
+def _compute_file_hash(path: Path) -> str:
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+def _compute_save_hash(save: GameSave | HeroicGame) -> str:
+    files = save.files
+    if not files:
+        return ""
+    combined = hashlib.sha256()
+    for fp in files:
+        combined.update(fp.name.encode())
+        try:
+            combined.update(str(fp.stat().st_mtime).encode())
+        except OSError:
+            pass
+    return combined.hexdigest()[:16]
+
+
+async def _probe_server_health(
+    server_url: str, server_port: int, api_key: str
+) -> dict:
+    url = f"{server_url.rstrip('/')}:{server_port}/api/health"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {"connected": True, "server_version": data.get("version", "")}
+            return {"connected": False, "server_version": ""}
+    except Exception:
+        return {"connected": False, "server_version": ""}
+
+
+async def _fetch_server_games(
+    server_url: str, server_port: int, api_key: str
+) -> dict[str, dict]:
+    url = f"{server_url.rstrip('/')}:{server_port}/api/games"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                games_map: dict[str, dict] = {}
+                for g in data.get("games", []):
+                    key = g.get("steam_app_id", "") or g.get("title", "")
+                    if key:
+                        games_map[key] = g
+                return games_map
+            return {}
+    except Exception:
+        return {}
+
+
+def _compute_sync_status(
+    local_save: GameSave | HeroicGame,
+    server_games: dict[str, dict],
+) -> SyncStatus:
+    if isinstance(local_save, GameSave):
+        key = local_save.steam_app_id
+    else:
+        key = local_save.title
+    if not key:
+        return SyncStatus.UNWATCHED
+    server_entry = server_games.get(key)
+    if server_entry is None:
+        return SyncStatus.LOCAL_ONLY
+    if not local_save.files:
+        return SyncStatus.UNWATCHED
+    return SyncStatus.SYNCED
 
 
 class BonfireDaemonHandler(BaseHTTPRequestHandler):
@@ -98,6 +189,10 @@ class BonfireDaemonHandler(BaseHTTPRequestHandler):
                 self._handle_scan()
             case "/api/games":
                 self._handle_games()
+            case "/api/config":
+                self._handle_config()
+            case "/api/server-health":
+                self._handle_server_health()
             case _:
                 if self.path in ("/", "") or self.path.startswith("/assets/"):
                     self._serve_static(self.path)
@@ -123,7 +218,11 @@ class BonfireDaemonHandler(BaseHTTPRequestHandler):
         secs = time.time() - self.daemon._start_time
         h, r = divmod(int(secs), 3600)
         m, s = divmod(r, 60)
-        self._send_json({"status": "running", "uptime": f"{h}:{m:02d}:{s:02d}", "version": __version__})
+        self._send_json({
+            "status": "running",
+            "uptime": f"{h}:{m:02d}:{s:02d}",
+            "version": __version__,
+        })
 
     def _handle_status(self) -> None:
         scan = self.daemon._last_scan
@@ -152,76 +251,116 @@ class BonfireDaemonHandler(BaseHTTPRequestHandler):
             logger.exception("Scan failed")
             self.daemon._last_scan_time = time.strftime("%Y-%m-%d %H:%M:%S")
             self.daemon._last_scan_errors = [str(e)]
-            steam_list: list[dict] = []
-            heroic_list: list[dict] = []
-            games_found = 0
-            save_files = 0
         finally:
             loop.close()
-        if result is not None:
-            steam_list = [
-                {
-                    "game_name": g.game_name,
-                    "steam_app_id": g.steam_app_id,
-                    "platform": g.platform,
-                    "save_dir": str(g.save_dir) if g.save_dir else None,
-                    "files": [str(f) for f in g.files],
-                }
-                for g in result.steam_games
-            ]
-            heroic_list = [
-                {
-                    "app_name": g.app_name,
-                    "title": g.title,
-                    "wine_prefix": str(g.wine_prefix) if g.wine_prefix else None,
-                    "platform": g.platform,
-                    "save_dir": str(g.save_dir) if g.save_dir else None,
-                    "files": [str(f) for f in g.files],
-                }
-                for g in result.heroic_games
-            ]
-            games_found = len(result.steam_games) + len(result.heroic_games)
-            save_files = sum(len(g.files) for g in result.steam_games) + sum(len(g.files) for g in result.heroic_games)
+        scan = self.daemon._last_scan
+        if scan is None:
+            self._send_json({"games_found": 0, "save_files": 0, "last_scan": "", "errors": self.daemon._last_scan_errors, "steam": [], "heroic": []})
+            return
+        steam_list = [
+            {
+                "game_name": g.game_name,
+                "steam_app_id": g.steam_app_id,
+                "platform": g.platform,
+                "save_dir": str(g.save_dir) if g.save_dir else None,
+                "files": [str(f) for f in g.files],
+                "hash": g.hash,
+            }
+            for g in scan.steam_games
+        ]
+        heroic_list = [
+            {
+                "app_name": g.app_name,
+                "title": g.title,
+                "wine_prefix": str(g.wine_prefix) if g.wine_prefix else None,
+                "platform": g.platform,
+                "cloud_save_folder": g.cloud_save_folder,
+                "cloud_saves_supported": g.cloud_saves_supported,
+                "save_dir": str(g.save_dir) if g.save_dir else None,
+                "files": [str(f) for f in g.files],
+            }
+            for g in scan.heroic_games
+        ]
         self._send_json({
-            "games_found": games_found,
-            "save_files": save_files,
+            "games_found": len(steam_list) + len(heroic_list),
+            "save_files": sum(len(g["files"]) for g in steam_list) + sum(len(g["files"]) for g in heroic_list),
             "last_scan": self.daemon._last_scan_time,
             "errors": self.daemon._last_scan_errors,
             "steam": steam_list,
             "heroic": heroic_list,
         })
 
+    def _handle_config(self) -> None:
+        cfg = self.daemon._config
+        self._send_json({
+            "server_url": cfg.server_url,
+            "server_port": cfg.server_port,
+            "api_key": cfg.api_key,
+            "machine_id": cfg.machine_id,
+            "server_web_url": f"{cfg.server_url.rstrip('/')}:{cfg.server_port}",
+        })
+
+    def _handle_server_health(self) -> None:
+        cfg = self.daemon._config
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                _probe_server_health(cfg.server_url, cfg.server_port, cfg.api_key)
+            )
+            self._send_json(result)
+        finally:
+            loop.close()
+
     def _handle_games(self) -> None:
         scan = self.daemon._last_scan
         if scan is None:
-            self._send_json({"steam": [], "heroic": []})
+            self._send_json({"games": []})
             return
-        self._send_json({
-            "steam": [
-                {
-                    "game_name": g.game_name,
-                    "steam_app_id": g.steam_app_id,
-                    "platform": g.platform,
-                    "save_dir": str(g.save_dir) if g.save_dir else None,
-                    "files": [str(f) for f in g.files],
-                    "hash": g.hash,
-                }
-                for g in scan.steam_games
-            ],
-            "heroic": [
-                {
-                    "app_name": g.app_name,
-                    "title": g.title,
-                    "wine_prefix": str(g.wine_prefix) if g.wine_prefix else None,
-                    "platform": g.platform,
-                    "cloud_save_folder": g.cloud_save_folder,
-                    "cloud_saves_supported": g.cloud_saves_supported,
-                    "save_dir": str(g.save_dir) if g.save_dir else None,
-                    "files": [str(f) for f in g.files],
-                }
-                for g in scan.heroic_games
-            ],
-        })
+
+        cfg = self.daemon._config
+        loop = asyncio.new_event_loop()
+        server_games: dict[str, dict] = {}
+        try:
+            server_games = loop.run_until_complete(
+                _fetch_server_games(cfg.server_url, cfg.server_port, cfg.api_key)
+            )
+        finally:
+            loop.close()
+
+        games: list[dict] = []
+        for g in scan.steam_games:
+            status = _compute_sync_status(g, server_games)
+            local_hash = _compute_save_hash(g) if g.files else ""
+            games.append({
+                "id": f"steam-{g.steam_app_id}",
+                "title": g.game_name,
+                "platform": g.platform,
+                "storefront": "Steam",
+                "save_dir": str(g.save_dir) if g.save_dir else None,
+                "file_count": len(g.files),
+                "sync_status": status.value,
+                "local_hash": local_hash,
+                "install_path": None,
+                "has_save_files": len(g.files) > 0,
+            })
+
+        for g in scan.heroic_games:
+            status = _compute_sync_status(g, server_games)
+            local_hash = _compute_save_hash(g) if g.files else ""
+            games.append({
+                "id": f"heroic-{g.app_name}",
+                "title": g.title,
+                "platform": g.platform,
+                "storefront": "Heroic",
+                "save_dir": str(g.save_dir) if g.save_dir else None,
+                "file_count": len(g.files),
+                "sync_status": status.value,
+                "local_hash": local_hash,
+                "install_path": str(g.install_path) if g.install_path else None,
+                "has_save_files": len(g.files) > 0,
+            })
+
+        self._send_json({"games": games})
 
     def _handle_watch_start(self) -> None:
         self.daemon._watch_active = True
@@ -238,48 +377,6 @@ def _json_default(obj: Any) -> str:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-def _tray_icon_image() -> Any:
-    try:
-        from PIL import Image
-        size = 16
-        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        pixels = img.load()
-        for y in range(size):
-            for x in range(size):
-                dx, dy = x - 7.5, y - 7.5
-                d = (dx * dx + dy * dy) ** 0.5
-                if d < 6:
-                    a = max(0, int(255 - d * 35))
-                    pixels[x, y] = (251, 146, 60, a)
-        return img
-    except ImportError:
-        return None
-
-
-def _run_tray(daemon: BonfireDaemon) -> None:
-    try:
-        import pystray
-        from pystray import MenuItem as Item
-    except ImportError:
-        logger.info("pystray not available — no system tray icon")
-        return
-
-    icon = pystray.Icon(
-        "bonfire-client",
-        _tray_icon_image(),
-        menu=pystray.Menu(
-            Item("Open Dashboard", lambda: webbrowser.open(f"http://{DAEMON_HOST}:{DAEMON_PORT}")),
-            Item("Quit", lambda _icon, _item: _tray_quit(_icon, daemon)),
-        ),
-    )
-    icon.run()
-
-
-def _tray_quit(icon: Any, daemon: BonfireDaemon) -> None:
-    icon.stop()
-    threading.Thread(target=daemon.stop, daemon=True).start()
-
-
 class BonfireDaemon:
     def __init__(self, host: str = DAEMON_HOST, port: int = DAEMON_PORT) -> None:
         self.host = host
@@ -291,18 +388,28 @@ class BonfireDaemon:
         self._last_scan_errors: list[str] = []
         self._watch_active = False
         self._start_time: float = 0.0
+        self._config = DaemonConfig()
+        self._tray = TrayManager(self)
 
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
     def run_forever(self) -> None:
+        cfg = load_config()
+        self._config = DaemonConfig(
+            server_url=cfg.server_url,
+            server_port=cfg.server_port,
+            api_key=cfg.api_key,
+            machine_id=cfg.machine_id,
+            server_web_url=f"{cfg.server_url.rstrip('/')}:{cfg.server_port}",
+        )
         handler = BonfireDaemonHandler
         handler.daemon = self
         self._httpd = HTTPServer((self.host, self.port), handler)
         self._start_time = time.time()
         logger.info("Daemon listening on %s:%d", self.host, self.port)
-        threading.Thread(target=_run_tray, args=(self,), daemon=True).start()
+        self._tray.start()
         try:
             self._httpd.serve_forever()
         except KeyboardInterrupt:
@@ -316,6 +423,7 @@ class BonfireDaemon:
         logger.info("Daemon started on %s:%d", self.host, self.port)
 
     def stop(self) -> None:
+        self._tray.stop()
         if self._httpd is not None:
             self._httpd.shutdown()
         self._thread = None
@@ -323,5 +431,9 @@ class BonfireDaemon:
 
 
 def run_daemon(host: str = DAEMON_HOST, port: int = DAEMON_PORT) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     daemon = BonfireDaemon(host, port)
     daemon.run_forever()
